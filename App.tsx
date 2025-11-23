@@ -1,9 +1,10 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { User, Clock, Settings, FileSpreadsheet, PlusCircle, LogOut, CheckCircle, AlertTriangle, ArrowLeft, Camera } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { User, Clock, Settings, FileSpreadsheet, PlusCircle, ArrowLeft, Camera, CheckCircle, AlertTriangle, Cpu } from 'lucide-react';
 import { DigitalClock } from './components/DigitalClock';
 import { WebcamCapture } from './components/WebcamCapture';
 import { getEmployees, saveEmployee, getTimeRecords, saveTimeRecord, resizeImage } from './services/storageService';
-import { verifyFace } from './services/geminiService';
+// Substituindo geminiService por faceService
+import { loadModels, getFaceDescriptor, compareFaces } from './services/faceService';
 import { generateCSV, downloadCSV } from './services/reportService';
 import { Employee, Tab, TimeRecord } from './types';
 
@@ -13,21 +14,37 @@ function App() {
   const [isCameraOpen, setIsCameraOpen] = useState(false);
   const [cameraMode, setCameraMode] = useState<'REGISTER' | 'CLOCK_IN'>('REGISTER');
   
+  // Model Loading State
+  const [modelsLoaded, setModelsLoaded] = useState(false);
+  const [loadingMessage, setLoadingMessage] = useState('Iniciando sistema...');
+
   // Registration State
   const [newEmpName, setNewEmpName] = useState('');
   const [newEmpSurname, setNewEmpSurname] = useState('');
   const [newEmpRole, setNewEmpRole] = useState('');
   const [newEmpPhoto, setNewEmpPhoto] = useState<string | null>(null);
+  const [isRegistering, setIsRegistering] = useState(false);
 
   // Clock In State
   const [selectedEmployeeId, setSelectedEmployeeId] = useState<string>('');
   const [clockInStatus, setClockInStatus] = useState<'IDLE' | 'PROCESSING' | 'SUCCESS' | 'ERROR'>('IDLE');
-  const [successData, setSuccessData] = useState<{ name: string; time: string } | null>(null);
+  const [successData, setSuccessData] = useState<{ name: string; time: string; msg?: string } | null>(null);
   const [errorMessage, setErrorMessage] = useState('');
 
-  // Load data on mount
+  // Load data and models on mount
   useEffect(() => {
     setEmployees(getEmployees());
+    
+    const initAI = async () => {
+      try {
+        setLoadingMessage('Carregando redes neurais...');
+        await loadModels();
+        setModelsLoaded(true);
+      } catch (e) {
+        setLoadingMessage('Erro ao carregar IA. Verifique sua conexão.');
+      }
+    };
+    initAI();
   }, []);
 
   const handleRegisterEmployee = async () => {
@@ -36,28 +53,53 @@ function App() {
       return;
     }
 
-    const id = Date.now().toString();
-    // Resize photo to save storage space
-    const optimizedPhoto = await resizeImage(newEmpPhoto);
-    
-    const newEmployee: Employee = {
-      id,
-      firstName: newEmpName,
-      lastName: newEmpSurname,
-      role: newEmpRole,
-      photoBase64: optimizedPhoto,
-      registeredAt: Date.now(),
-    };
+    if (!modelsLoaded) {
+      alert("Aguarde o carregamento do sistema de reconhecimento.");
+      return;
+    }
 
-    saveEmployee(newEmployee);
-    setEmployees(getEmployees());
-    
-    // Reset Form
-    setNewEmpName('');
-    setNewEmpSurname('');
-    setNewEmpRole('');
-    setNewEmpPhoto(null);
-    alert("Funcionário cadastrado com sucesso!");
+    setIsRegistering(true);
+
+    try {
+      const id = Date.now().toString();
+      // Resize photo to save storage space
+      const optimizedPhoto = await resizeImage(newEmpPhoto);
+      
+      // Compute biometric descriptor
+      const descriptor = await getFaceDescriptor(optimizedPhoto);
+
+      if (!descriptor) {
+        alert("Não foi possível detectar um rosto nítido na foto. Tente novamente.");
+        setIsRegistering(false);
+        return;
+      }
+      
+      const newEmployee: Employee = {
+        id,
+        firstName: newEmpName,
+        lastName: newEmpSurname,
+        role: newEmpRole,
+        photoBase64: optimizedPhoto,
+        // Convert Float32Array to standard array for JSON storage
+        faceDescriptor: Array.from(descriptor),
+        registeredAt: Date.now(),
+      };
+
+      saveEmployee(newEmployee);
+      setEmployees(getEmployees());
+      
+      // Reset Form
+      setNewEmpName('');
+      setNewEmpSurname('');
+      setNewEmpRole('');
+      setNewEmpPhoto(null);
+      alert("Funcionário cadastrado com sucesso!");
+    } catch (error) {
+      console.error(error);
+      alert("Erro ao processar biometria.");
+    } finally {
+      setIsRegistering(false);
+    }
   };
 
   const handleClockInCapture = async (livePhoto: string) => {
@@ -71,9 +113,15 @@ function App() {
       return;
     }
 
+    if (!employee.faceDescriptor) {
+      setClockInStatus('ERROR');
+      setErrorMessage("Este funcionário não possui biometria cadastrada. Recadastre a foto no RH.");
+      return;
+    }
+
     try {
-      // 1. Verify Face with Gemini
-      const result = await verifyFace(employee.photoBase64, livePhoto, `${employee.firstName} ${employee.lastName}`);
+      // 1. Verify Face Locally (Euclidean Distance)
+      const result = await compareFaces(employee.faceDescriptor, livePhoto);
       
       if (!result.verified) {
         setClockInStatus('ERROR');
@@ -81,8 +129,7 @@ function App() {
         return;
       }
 
-      // 2. Determine Entry or Exit (Simple toggle logic based on last record)
-      // In a real app, this would be more complex or user-selected
+      // 2. Determine Entry or Exit
       const allRecords = getTimeRecords();
       const empRecords = allRecords
         .filter(r => r.employeeId === employee.id)
@@ -97,7 +144,8 @@ function App() {
         employeeId: employee.id,
         timestamp: now,
         type: type,
-        verificationStatus: 'SUCCESS'
+        verificationStatus: 'SUCCESS',
+        similarity: result.distance
       };
 
       saveTimeRecord(newRecord);
@@ -108,11 +156,11 @@ function App() {
 
       setSuccessData({
         name: `${employee.firstName} ${employee.lastName}`,
-        time: `${type}: ${timeFormatted}`
+        time: `${type}: ${timeFormatted}`,
+        msg: result.message
       });
       setClockInStatus('SUCCESS');
 
-      // 3. Auto-close popup after 3 seconds
       setTimeout(() => {
         setClockInStatus('IDLE');
         setSuccessData(null);
@@ -138,12 +186,26 @@ function App() {
     downloadCSV(csvContent, filename);
   };
 
+  // --- Initial Loading Screen ---
+  if (!modelsLoaded) {
+    return (
+      <div className="h-screen w-screen bg-black flex flex-col items-center justify-center text-red-500">
+        <div className="relative mb-8">
+            <div className="w-24 h-24 border-4 border-red-900 rounded-full"></div>
+            <div className="w-24 h-24 border-4 border-red-500 border-t-transparent rounded-full animate-spin absolute top-0 left-0"></div>
+            <Cpu className="w-10 h-10 absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 text-red-500 animate-pulse" />
+        </div>
+        <p className="text-lg font-mono animate-pulse">{loadingMessage}</p>
+        <p className="text-xs text-red-900 mt-2">Carregando modelos SSD Mobilenet V1...</p>
+      </div>
+    );
+  }
+
   // --- Renders ---
 
   const renderHome = () => (
     <div className="flex flex-col items-center justify-center h-full gap-4 md:gap-12 animate-fade-in relative z-10 w-full overflow-y-auto py-6">
       
-      {/* Logo da Aplicação */}
       <img 
         src="https://i.ibb.co/kgxf99k5/LOGOS-10-ANOS-BRANCA-E-VERMELHA.png" 
         alt="Logo" 
@@ -189,7 +251,6 @@ function App() {
         </button>
 
         <div className="bg-black/60 backdrop-blur-xl p-5 md:p-8 rounded-3xl shadow-[0_0_40px_rgba(0,0,0,0.5)] border border-red-500/30 w-full relative overflow-hidden mt-4 md:mt-0">
-            {/* Decorative red glow */}
             <div className="absolute -top-20 -right-20 w-40 h-40 bg-red-600/20 rounded-full blur-3xl pointer-events-none"></div>
             
             <h2 className="text-xl md:text-3xl font-bold text-center mb-4 md:mb-8 text-white drop-shadow-lg flex justify-center items-center gap-2">
@@ -232,7 +293,7 @@ function App() {
                 }`}
                 >
                 <Camera className="w-5 h-5 md:w-6 md:h-6" />
-                Iniciar Reconhecimento
+                Iniciar Validação
                 </button>
             </div>
             )}
@@ -246,10 +307,11 @@ function App() {
             <div className="bg-green-100 p-4 rounded-full shadow-inner">
                <CheckCircle className="w-12 h-12 md:w-16 md:h-16 text-green-600" />
             </div>
-            <h3 className="text-xl md:text-2xl font-bold text-green-800 text-center">Ponto Registrado!</h3>
+            <h3 className="text-xl md:text-2xl font-bold text-green-800 text-center">Acesso Permitido</h3>
             <div className="text-center w-full">
               <p className="text-lg md:text-xl font-bold text-slate-800 truncate">{successData.name}</p>
               <p className="text-base md:text-lg text-slate-600 mt-1 font-mono bg-slate-100 px-3 py-1 rounded inline-block">{successData.time}</p>
+              {successData.msg && <p className="text-xs text-green-600 mt-2">{successData.msg}</p>}
             </div>
             <div className="h-1.5 w-full bg-slate-200 rounded-full mt-4 overflow-hidden">
                 <div className="h-full bg-green-500 animate-[width_3s_linear_forwards] w-full" style={{ width: '0%' }}></div>
@@ -265,7 +327,7 @@ function App() {
              <div className="bg-red-900/50 p-4 rounded-full">
                 <AlertTriangle className="w-12 h-12 md:w-16 md:h-16 text-red-500" />
              </div>
-             <h3 className="text-xl md:text-2xl font-bold text-red-400 text-center">Falha no Registro</h3>
+             <h3 className="text-xl md:text-2xl font-bold text-red-400 text-center">Acesso Negado</h3>
              <p className="text-center text-red-100 text-sm md:text-base">{errorMessage}</p>
              <button 
                 onClick={() => setClockInStatus('IDLE')}
@@ -285,7 +347,7 @@ function App() {
                  <div className="w-16 h-16 md:w-20 md:h-20 border-4 border-red-900 rounded-full"></div>
                  <div className="w-16 h-16 md:w-20 md:h-20 border-4 border-red-500 border-t-transparent rounded-full animate-spin absolute top-0 left-0"></div>
              </div>
-             <p className="text-red-100 font-medium tracking-wide animate-pulse text-sm md:text-base">Validando Biometria...</p>
+             <p className="text-red-100 font-medium tracking-wide animate-pulse text-sm md:text-base">Comparando Biometria...</p>
            </div>
         </div>
       )}
@@ -376,9 +438,10 @@ function App() {
 
                 <button 
                     onClick={handleRegisterEmployee}
-                    className="w-full bg-gradient-to-r from-red-700 to-red-600 hover:from-red-600 hover:to-red-500 text-white font-bold py-3 md:py-4 rounded-xl mt-2 md:mt-4 shadow-lg shadow-red-900/20 active:scale-95 transition-all border border-red-500/20"
+                    disabled={isRegistering}
+                    className={`w-full bg-gradient-to-r from-red-700 to-red-600 hover:from-red-600 hover:to-red-500 text-white font-bold py-3 md:py-4 rounded-xl mt-2 md:mt-4 shadow-lg shadow-red-900/20 active:scale-95 transition-all border border-red-500/20 ${isRegistering ? 'opacity-50 cursor-wait' : ''}`}
                 >
-                    Salvar Cadastro
+                    {isRegistering ? 'Processando Biometria...' : 'Salvar Cadastro'}
                 </button>
             </div>
             </div>
@@ -417,6 +480,7 @@ function App() {
                                 <div className="min-w-0">
                                     <p className="font-bold text-red-50 truncate">{emp.firstName} {emp.lastName}</p>
                                     <p className="text-xs text-red-300/70 uppercase tracking-wider truncate">{emp.role}</p>
+                                    {emp.faceDescriptor && <p className="text-[10px] text-green-500 mt-1">Biometria Ativa</p>}
                                 </div>
                             </div>
                         ))}
