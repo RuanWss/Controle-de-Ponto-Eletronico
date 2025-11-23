@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { User, Clock, Settings, FileSpreadsheet, PlusCircle, ArrowLeft, Camera, CheckCircle, AlertTriangle, Cpu } from 'lucide-react';
+import { User, Clock, Settings, FileSpreadsheet, PlusCircle, ArrowLeft, Camera, CheckCircle, AlertTriangle, Cpu, Upload } from 'lucide-react';
 import { DigitalClock } from './components/DigitalClock';
 import { WebcamCapture } from './components/WebcamCapture';
 import { getEmployees, saveEmployee, getTimeRecords, saveTimeRecord, resizeImage } from './services/storageService';
@@ -99,6 +99,17 @@ function App() {
       alert("Erro ao processar biometria.");
     } finally {
       setIsRegistering(false);
+    }
+  };
+
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setNewEmpPhoto(reader.result as string);
+      };
+      reader.readAsDataURL(file);
     }
   };
 
@@ -423,16 +434,29 @@ function App() {
                             </div>
                         </div>
                     ) : (
-                        <button 
-                            onClick={() => {
-                                setCameraMode('REGISTER');
-                                setIsCameraOpen(true);
-                            }}
-                            className="w-full h-40 md:h-48 bg-red-950/10 border-2 border-dashed border-red-500/30 rounded-xl flex flex-col items-center justify-center text-red-400/60 hover:border-red-500 hover:text-red-400 transition hover:bg-red-950/30 group"
-                        >
-                            <Camera className="w-8 h-8 md:w-10 md:h-10 mb-2 group-hover:scale-110 transition-transform" />
-                            <span className="text-sm">Tirar Foto</span>
-                        </button>
+                        <div className="flex gap-2 h-40 md:h-48">
+                            <button
+                                onClick={() => {
+                                    setCameraMode('REGISTER');
+                                    setIsCameraOpen(true);
+                                }}
+                                className="flex-1 bg-red-950/10 border-2 border-dashed border-red-500/30 rounded-xl flex flex-col items-center justify-center text-red-400/60 hover:border-red-500 hover:text-red-400 transition hover:bg-red-950/30 group"
+                            >
+                                <Camera className="w-6 h-6 md:w-8 md:h-8 mb-2 group-hover:scale-110 transition-transform" />
+                                <span className="text-xs md:text-sm text-center">Tirar Foto</span>
+                            </button>
+
+                            <label className="flex-1 bg-red-950/10 border-2 border-dashed border-red-500/30 rounded-xl flex flex-col items-center justify-center text-red-400/60 hover:border-red-500 hover:text-red-400 transition hover:bg-red-950/30 group cursor-pointer">
+                                <input
+                                    type="file"
+                                    accept="image/*"
+                                    className="hidden"
+                                    onChange={handleFileUpload}
+                                />
+                                <Upload className="w-6 h-6 md:w-8 md:h-8 mb-2 group-hover:scale-110 transition-transform" />
+                                <span className="text-xs md:text-sm text-center">Upload Foto</span>
+                            </label>
+                        </div>
                     )}
                 </div>
 
