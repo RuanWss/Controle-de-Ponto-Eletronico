@@ -1,0 +1,7 @@
+{
+  "name": "PontoFacial AI",
+  "description": "Sistema de ponto eletrônico com reconhecimento facial via Gemini AI e gestão de RH.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
