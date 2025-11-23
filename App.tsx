@@ -3,8 +3,8 @@ import { User, Clock, Settings, FileSpreadsheet, PlusCircle, ArrowLeft, Camera, 
 import { DigitalClock } from './components/DigitalClock';
 import { WebcamCapture } from './components/WebcamCapture';
 import { getEmployees, saveEmployee, getTimeRecords, saveTimeRecord, resizeImage } from './services/storageService';
-// Substituindo geminiService por faceService
-import { loadModels, getFaceDescriptor, compareFaces } from './services/faceService';
+// Alterado para serviço sem IA
+import { compareImagesWithoutAI } from './services/faceService';
 import { generateCSV, downloadCSV } from './services/reportService';
 import { Employee, Tab, TimeRecord } from './types';
 
@@ -14,10 +14,6 @@ function App() {
   const [isCameraOpen, setIsCameraOpen] = useState(false);
   const [cameraMode, setCameraMode] = useState<'REGISTER' | 'CLOCK_IN'>('REGISTER');
   
-  // Model Loading State
-  const [modelsLoaded, setModelsLoaded] = useState(false);
-  const [loadingMessage, setLoadingMessage] = useState('Iniciando sistema...');
-
   // Registration State
   const [newEmpName, setNewEmpName] = useState('');
   const [newEmpSurname, setNewEmpSurname] = useState('');
@@ -31,30 +27,14 @@ function App() {
   const [successData, setSuccessData] = useState<{ name: string; time: string; msg?: string } | null>(null);
   const [errorMessage, setErrorMessage] = useState('');
 
-  // Load data and models on mount
+  // Load data on mount
   useEffect(() => {
     setEmployees(getEmployees());
-    
-    const initAI = async () => {
-      try {
-        setLoadingMessage('Carregando redes neurais...');
-        await loadModels();
-        setModelsLoaded(true);
-      } catch (e) {
-        setLoadingMessage('Erro ao carregar IA. Verifique sua conexão.');
-      }
-    };
-    initAI();
   }, []);
 
   const handleRegisterEmployee = async () => {
     if (!newEmpName || !newEmpSurname || !newEmpRole || !newEmpPhoto) {
       alert("Por favor, preencha todos os campos e tire a foto.");
-      return;
-    }
-
-    if (!modelsLoaded) {
-      alert("Aguarde o carregamento do sistema de reconhecimento.");
       return;
     }
 
@@ -65,23 +45,12 @@ function App() {
       // Resize photo to save storage space
       const optimizedPhoto = await resizeImage(newEmpPhoto);
       
-      // Compute biometric descriptor
-      const descriptor = await getFaceDescriptor(optimizedPhoto);
-
-      if (!descriptor) {
-        alert("Não foi possível detectar um rosto nítido na foto. Tente novamente.");
-        setIsRegistering(false);
-        return;
-      }
-      
       const newEmployee: Employee = {
         id,
         firstName: newEmpName,
         lastName: newEmpSurname,
         role: newEmpRole,
         photoBase64: optimizedPhoto,
-        // Convert Float32Array to standard array for JSON storage
-        faceDescriptor: Array.from(descriptor),
         registeredAt: Date.now(),
       };
 
@@ -96,7 +65,7 @@ function App() {
       alert("Funcionário cadastrado com sucesso!");
     } catch (error) {
       console.error(error);
-      alert("Erro ao processar biometria.");
+      alert("Erro ao salvar cadastro.");
     } finally {
       setIsRegistering(false);
     }
@@ -124,15 +93,9 @@ function App() {
       return;
     }
 
-    if (!employee.faceDescriptor) {
-      setClockInStatus('ERROR');
-      setErrorMessage("Este funcionário não possui biometria cadastrada. Recadastre a foto no RH.");
-      return;
-    }
-
     try {
-      // 1. Verify Face Locally (Euclidean Distance)
-      const result = await compareFaces(employee.faceDescriptor, livePhoto);
+      // 1. Comparação Visual (Sem IA - Apenas Pixels)
+      const result = await compareImagesWithoutAI(employee.photoBase64, livePhoto);
       
       if (!result.verified) {
         setClockInStatus('ERROR');
@@ -156,7 +119,7 @@ function App() {
         timestamp: now,
         type: type,
         verificationStatus: 'SUCCESS',
-        similarity: result.distance
+        similarity: result.similarity
       };
 
       saveTimeRecord(newRecord);
@@ -196,21 +159,6 @@ function App() {
     const filename = `relatorio_ponto_${new Date().toISOString().split('T')[0]}.csv`;
     downloadCSV(csvContent, filename);
   };
-
-  // --- Initial Loading Screen ---
-  if (!modelsLoaded) {
-    return (
-      <div className="h-screen w-screen bg-black flex flex-col items-center justify-center text-red-500">
-        <div className="relative mb-8">
-            <div className="w-24 h-24 border-4 border-red-900 rounded-full"></div>
-            <div className="w-24 h-24 border-4 border-red-500 border-t-transparent rounded-full animate-spin absolute top-0 left-0"></div>
-            <Cpu className="w-10 h-10 absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 text-red-500 animate-pulse" />
-        </div>
-        <p className="text-lg font-mono animate-pulse">{loadingMessage}</p>
-        <p className="text-xs text-red-900 mt-2">Carregando modelos SSD Mobilenet V1...</p>
-      </div>
-    );
-  }
 
   // --- Renders ---
 
@@ -304,7 +252,7 @@ function App() {
                 }`}
                 >
                 <Camera className="w-5 h-5 md:w-6 md:h-6" />
-                Iniciar Validação
+                Validar Foto
                 </button>
             </div>
             )}
@@ -358,7 +306,7 @@ function App() {
                  <div className="w-16 h-16 md:w-20 md:h-20 border-4 border-red-900 rounded-full"></div>
                  <div className="w-16 h-16 md:w-20 md:h-20 border-4 border-red-500 border-t-transparent rounded-full animate-spin absolute top-0 left-0"></div>
              </div>
-             <p className="text-red-100 font-medium tracking-wide animate-pulse text-sm md:text-base">Comparando Biometria...</p>
+             <p className="text-red-100 font-medium tracking-wide animate-pulse text-sm md:text-base">Comparando Imagens...</p>
            </div>
         </div>
       )}
@@ -420,7 +368,7 @@ function App() {
                 </div>
 
                 <div className="pt-2">
-                    <label className="text-xs md:text-sm text-red-200/80 font-medium mb-2 block">Foto de Referência (Rosto)</label>
+                    <label className="text-xs md:text-sm text-red-200/80 font-medium mb-2 block">Foto de Referência</label>
                     {newEmpPhoto ? (
                         <div className="relative w-full h-40 md:h-48 bg-black/50 rounded-xl overflow-hidden group border border-red-500/30">
                             <img src={newEmpPhoto} alt="Preview" className="w-full h-full object-cover" />
@@ -465,7 +413,7 @@ function App() {
                     disabled={isRegistering}
                     className={`w-full bg-gradient-to-r from-red-700 to-red-600 hover:from-red-600 hover:to-red-500 text-white font-bold py-3 md:py-4 rounded-xl mt-2 md:mt-4 shadow-lg shadow-red-900/20 active:scale-95 transition-all border border-red-500/20 ${isRegistering ? 'opacity-50 cursor-wait' : ''}`}
                 >
-                    {isRegistering ? 'Processando Biometria...' : 'Salvar Cadastro'}
+                    {isRegistering ? 'Processando...' : 'Salvar Cadastro'}
                 </button>
             </div>
             </div>
@@ -504,7 +452,6 @@ function App() {
                                 <div className="min-w-0">
                                     <p className="font-bold text-red-50 truncate">{emp.firstName} {emp.lastName}</p>
                                     <p className="text-xs text-red-300/70 uppercase tracking-wider truncate">{emp.role}</p>
-                                    {emp.faceDescriptor && <p className="text-[10px] text-green-500 mt-1">Biometria Ativa</p>}
                                 </div>
                             </div>
                         ))}

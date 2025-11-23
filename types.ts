@@ -4,7 +4,6 @@ export interface Employee {
   lastName: string;
   role: string;
   photoBase64: string; // Stored reference photo
-  faceDescriptor?: number[]; // Array de 128 floats representando a biometria facial
   registeredAt: number;
 }
 
@@ -14,7 +13,7 @@ export interface TimeRecord {
   timestamp: number; // UTC timestamp
   type: 'ENTRADA' | 'SAIDA';
   verificationStatus: 'SUCCESS' | 'FAILED' | 'MANUAL';
-  similarity?: number; // Armazena a distância/similaridade calculada
+  similarity?: number; // Armazena a porcentagem de similaridade de pixels
 }
 
 export enum Tab {
@@ -26,5 +25,5 @@ export enum Tab {
 export interface VerificationResult {
   verified: boolean;
   message: string;
-  distance?: number;
+  similarity?: number;
 }

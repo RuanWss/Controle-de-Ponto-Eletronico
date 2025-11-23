@@ -1,84 +1,95 @@
 import { VerificationResult } from '../types';
 
-// Declaração global pois estamos importando via CDN no index.html
-declare const faceapi: any;
+/**
+ * SERVIÇO DE COMPARAÇÃO DE IMAGENS SEM IA
+ * 
+ * Utiliza algoritmos de visão computacional clássica (comparação de pixels)
+ * para determinar se duas imagens são similares.
+ */
 
-// URL pública para os modelos do face-api.js
-const MODELS_URL = 'https://justadudewhohacks.github.io/face-api.js/models';
-
-export const loadModels = async (): Promise<void> => {
-  try {
-    console.log("Carregando modelos de reconhecimento facial...");
-    await Promise.all([
-      faceapi.nets.ssdMobilenetv1.loadFromUri(MODELS_URL),
-      faceapi.nets.faceLandmark68Net.loadFromUri(MODELS_URL),
-      faceapi.nets.faceRecognitionNet.loadFromUri(MODELS_URL)
-    ]);
-    console.log("Modelos carregados com sucesso!");
-  } catch (error) {
-    console.error("Erro ao carregar modelos:", error);
-    throw new Error("Falha ao carregar inteligência artificial local.");
-  }
+// Função auxiliar para carregar imagem em um elemento HTML Image
+const loadImage = (src: string): Promise<HTMLImageElement> => {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = "Anonymous";
+    img.src = src;
+    img.onload = () => resolve(img);
+    img.onerror = (err) => reject(err);
+  });
 };
 
 /**
- * Detecta um rosto na imagem e retorna o descritor biométrico (array de 128 números).
+ * Compara duas imagens pixel a pixel.
+ * Reduz as imagens para uma resolução baixa (ex: 64x64) para ignorar ruídos
+ * e focar na estrutura geral de luminosidade e cor.
  */
-export const getFaceDescriptor = async (imageSrc: string): Promise<Float32Array | null> => {
-  const img = await faceapi.fetchImage(imageSrc);
-  const detection = await faceapi.detectSingleFace(img).withFaceLandmarks().withFaceDescriptor();
-  
-  if (!detection) {
-    return null;
-  }
-  return detection.descriptor;
-};
-
-/**
- * Compara dois rostos calculando a Distância Euclidiana entre seus descritores.
- * Similar a: face_recognition.face_distance([encodeElon], encodeElonTest)
- */
-export const compareFaces = async (
-  referenceDescriptor: number[] | Float32Array,
-  liveImageSrc: string
+export const compareImagesWithoutAI = async (
+  referenceBase64: string,
+  liveBase64: string
 ): Promise<VerificationResult> => {
   try {
-    // 1. Obter descritor da imagem ao vivo
-    const liveDescriptor = await getFaceDescriptor(liveImageSrc);
+    const size = 64; // Resolução de comparação (quanto menor, mais tolerante)
+    
+    const img1 = await loadImage(referenceBase64);
+    const img2 = await loadImage(liveBase64);
 
-    if (!liveDescriptor) {
-      return { verified: false, message: "Nenhum rosto detectado na câmera." };
+    const canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext('2d');
+
+    if (!ctx) throw new Error("Canvas context error");
+
+    // 1. Processar Imagem Referência
+    ctx.drawImage(img1, 0, 0, size, size);
+    const data1 = ctx.getImageData(0, 0, size, size).data;
+
+    // 2. Processar Imagem Ao Vivo
+    ctx.clearRect(0, 0, size, size);
+    ctx.drawImage(img2, 0, 0, size, size);
+    const data2 = ctx.getImageData(0, 0, size, size).data;
+
+    // 3. Calcular Diferença Absoluta Média dos Pixels
+    let diffSum = 0;
+    // O array data contém [R, G, B, A, R, G, B, A...]
+    // Iteramos de 4 em 4 para pegar cada pixel
+    for (let i = 0; i < data1.length; i += 4) {
+      // Grayscale simples: (R+G+B)/3
+      const gray1 = (data1[i] + data1[i+1] + data1[i+2]) / 3;
+      const gray2 = (data2[i] + data2[i+1] + data2[i+2]) / 3;
+      
+      diffSum += Math.abs(gray1 - gray2);
     }
 
-    // 2. Calcular Distância Euclidiana
-    // O face-api.js já possui essa utilidade, mas podemos fazer manual para ficar igual ao Python se quisermos
-    const distance = faceapi.euclideanDistance(referenceDescriptor, liveDescriptor);
+    const totalPixels = size * size;
+    const avgDiff = diffSum / totalPixels; // Diferença média por pixel (0 a 255)
     
-    // Threshold (Limiar):
-    // < 0.6 é considerado a mesma pessoa (padrão de mercado/dlib)
-    // < 0.4 é muito similar
-    const threshold = 0.55; 
+    // Converter diferença (0-255) para porcentagem de similaridade (0-100%)
+    // Se avgDiff for 0, similaridade é 100%. Se for 255, é 0%.
+    const similarity = 100 - ((avgDiff / 255) * 100);
 
-    console.log(`Distância calculada: ${distance}`);
+    console.log(`Diferença média: ${avgDiff.toFixed(2)} | Similaridade: ${similarity.toFixed(2)}%`);
 
-    if (distance < threshold) {
-      // Cálculo de % de similaridade para exibir na UI (apenas cosmético)
-      const similarity = Math.max(0, 100 - (distance * 100)); 
+    // Threshold (Limite de Aceitação)
+    // Sem IA, a comparação é rígida. 85% requer iluminação e posição bem parecidas.
+    const THRESHOLD = 75; 
+
+    if (similarity >= THRESHOLD) {
       return { 
         verified: true, 
-        message: `Identidade confirmada (${similarity.toFixed(1)}%)`,
-        distance: distance
+        message: `Validação visual confirmada (${similarity.toFixed(0)}%)`,
+        similarity: similarity
       };
     } else {
       return { 
         verified: false, 
-        message: "Rosto não confere com o cadastro.", 
-        distance: distance 
+        message: `Imagem diferente da referência. Tente mesma luz e posição.`,
+        similarity: similarity 
       };
     }
 
   } catch (error) {
-    console.error("Erro na comparação facial:", error);
-    return { verified: false, message: "Erro no processamento da imagem." };
+    console.error("Erro na comparação visual:", error);
+    return { verified: false, message: "Erro ao processar imagem." };
   }
 };
