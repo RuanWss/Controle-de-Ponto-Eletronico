@@ -1,13 +1,113 @@
-import { VerificationResult } from '../types';
+import { Employee, VerificationResult } from '../types';
+
+// Access the global faceapi variable injected via script tag
+declare const faceapi: any;
+
+// URL to load models from (using a reliable GitHub Pages mirror for face-api models)
+const MODEL_URL = 'https://justadudewhohacks.github.io/face-api.js/models';
+
+let modelsLoaded = false;
 
 /**
- * SERVIÇO DE COMPARAÇÃO DE IMAGENS SEM IA
- * 
- * Utiliza algoritmos de visão computacional clássica (comparação de pixels)
- * para determinar se duas imagens são similares.
+ * Carrega os modelos neurais necessários para detecção e reconhecimento.
  */
+export const loadModels = async (): Promise<void> => {
+  if (modelsLoaded) return;
+  
+  console.log("Carregando modelos de IA...");
+  try {
+    await Promise.all([
+      faceapi.nets.ssdMobilenetv1.loadFromUri(MODEL_URL),
+      faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
+      faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL)
+    ]);
+    modelsLoaded = true;
+    console.log("Modelos carregados com sucesso!");
+  } catch (error) {
+    console.error("Erro ao carregar modelos:", error);
+    throw new Error("Falha ao carregar inteligência artificial.");
+  }
+};
 
-// Função auxiliar para carregar imagem em um elemento HTML Image
+/**
+ * Gera o descritor facial (array de números) a partir de uma imagem Base64 ou HTMLImageElement.
+ * Usado no cadastro.
+ */
+export const getFaceDescriptor = async (imageInput: string | HTMLImageElement | HTMLVideoElement): Promise<Float32Array | null> => {
+  if (!modelsLoaded) await loadModels();
+
+  let input = imageInput;
+  if (typeof imageInput === 'string') {
+    const img = await loadImage(imageInput);
+    input = img;
+  }
+
+  // Detecta rosto único com landmarks e descritor
+  const detection = await faceapi.detectSingleFace(input as any)
+    .withFaceLandmarks()
+    .withFaceDescriptor();
+
+  if (!detection) {
+    return null;
+  }
+
+  return detection.descriptor;
+};
+
+/**
+ * Identifica o funcionário mais parecido com o rosto detectado.
+ */
+export const identifyFace = async (
+  videoElement: HTMLVideoElement, 
+  employees: Employee[]
+): Promise<VerificationResult> => {
+  if (!modelsLoaded) return { verified: false, message: "Modelos não carregados." };
+  if (employees.length === 0) return { verified: false, message: "Sem funcionários cadastrados." };
+
+  // 1. Detectar rosto no frame atual do vídeo
+  const detection = await faceapi.detectSingleFace(videoElement, new faceapi.SsdMobilenetv1Options({ minConfidence: 0.5 }))
+    .withFaceLandmarks()
+    .withFaceDescriptor();
+
+  if (!detection) {
+    return { verified: false, message: "Nenhum rosto detectado." };
+  }
+
+  // 2. Criar Matcher com os descritores dos funcionários
+  // Convertemos os arrays salvos no JSON de volta para Float32Array e depois LabeledFaceDescriptors
+  const labeledDescriptors = employees
+    .filter(emp => emp.faceDescriptor && emp.faceDescriptor.length > 0)
+    .map(emp => {
+      return new faceapi.LabeledFaceDescriptors(
+        emp.id,
+        [new Float32Array(emp.faceDescriptor!)]
+      );
+    });
+
+  if (labeledDescriptors.length === 0) {
+    return { verified: false, message: "Funcionários sem biometria cadastrada." };
+  }
+
+  const faceMatcher = new faceapi.FaceMatcher(labeledDescriptors, 0.55); // Threshold de 0.55 (quanto menor, mais estrito)
+
+  // 3. Comparar o rosto detectado com o banco de dados
+  const bestMatch = faceMatcher.findBestMatch(detection.descriptor);
+
+  if (bestMatch.label !== 'unknown') {
+    // Cálculo de confiança inversa à distância (0 dist = 100% conf)
+    const confidence = Math.max(0, 100 - (bestMatch.distance * 100));
+    return {
+      verified: true,
+      matchId: bestMatch.label,
+      message: "Identificado",
+      similarity: confidence
+    };
+  } else {
+    return { verified: false, message: "Rosto desconhecido." };
+  }
+};
+
+// Helper para carregar imagem string para elemento HTML
 const loadImage = (src: string): Promise<HTMLImageElement> => {
   return new Promise((resolve, reject) => {
     const img = new Image();
@@ -16,80 +116,4 @@ const loadImage = (src: string): Promise<HTMLImageElement> => {
     img.onload = () => resolve(img);
     img.onerror = (err) => reject(err);
   });
-};
-
-/**
- * Compara duas imagens pixel a pixel.
- * Reduz as imagens para uma resolução baixa (ex: 64x64) para ignorar ruídos
- * e focar na estrutura geral de luminosidade e cor.
- */
-export const compareImagesWithoutAI = async (
-  referenceBase64: string,
-  liveBase64: string
-): Promise<VerificationResult> => {
-  try {
-    const size = 64; // Resolução de comparação (quanto menor, mais tolerante)
-    
-    const img1 = await loadImage(referenceBase64);
-    const img2 = await loadImage(liveBase64);
-
-    const canvas = document.createElement('canvas');
-    canvas.width = size;
-    canvas.height = size;
-    const ctx = canvas.getContext('2d');
-
-    if (!ctx) throw new Error("Canvas context error");
-
-    // 1. Processar Imagem Referência
-    ctx.drawImage(img1, 0, 0, size, size);
-    const data1 = ctx.getImageData(0, 0, size, size).data;
-
-    // 2. Processar Imagem Ao Vivo
-    ctx.clearRect(0, 0, size, size);
-    ctx.drawImage(img2, 0, 0, size, size);
-    const data2 = ctx.getImageData(0, 0, size, size).data;
-
-    // 3. Calcular Diferença Absoluta Média dos Pixels
-    let diffSum = 0;
-    // O array data contém [R, G, B, A, R, G, B, A...]
-    // Iteramos de 4 em 4 para pegar cada pixel
-    for (let i = 0; i < data1.length; i += 4) {
-      // Grayscale simples: (R+G+B)/3
-      const gray1 = (data1[i] + data1[i+1] + data1[i+2]) / 3;
-      const gray2 = (data2[i] + data2[i+1] + data2[i+2]) / 3;
-      
-      diffSum += Math.abs(gray1 - gray2);
-    }
-
-    const totalPixels = size * size;
-    const avgDiff = diffSum / totalPixels; // Diferença média por pixel (0 a 255)
-    
-    // Converter diferença (0-255) para porcentagem de similaridade (0-100%)
-    // Se avgDiff for 0, similaridade é 100%. Se for 255, é 0%.
-    const similarity = 100 - ((avgDiff / 255) * 100);
-
-    console.log(`Diferença média: ${avgDiff.toFixed(2)} | Similaridade: ${similarity.toFixed(2)}%`);
-
-    // Threshold (Limite de Aceitação)
-    // Sem IA, a comparação é rígida. 85% requer iluminação e posição bem parecidas.
-    const THRESHOLD = 75; 
-
-    if (similarity >= THRESHOLD) {
-      return { 
-        verified: true, 
-        message: `Validação visual confirmada (${similarity.toFixed(0)}%)`,
-        similarity: similarity
-      };
-    } else {
-      return { 
-        verified: false, 
-        message: `Imagem diferente da referência. Tente mesma luz e posição.`,
-        similarity: similarity 
-      };
-    }
-
-  } catch (error) {
-    console.error("Erro na comparação visual:", error);
-    return { verified: false, message: "Erro ao processar imagem." };
-  }
 };
